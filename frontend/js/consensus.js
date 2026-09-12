@@ -467,7 +467,7 @@
                     <div class="flex w-full items-center justify-between gap-3 rounded-xl border border-consensus/40 bg-consensus-soft px-4 py-3 shadow-xs">
                       <div class="flex items-center gap-3">
                         <span class="size-2 rounded-full bg-consensus"></span>
-                        <span class="text-sm font-medium text-foreground">5 students confused</span>
+                        <span class="text-sm font-medium text-foreground">3 students confused</span>
                       </div>
                       <span class="text-xs text-consensus-strong font-medium">threshold reached</span>
                     </div>
@@ -548,7 +548,7 @@
                   </span>
                   <span class="font-serif text-2xl text-muted-foreground/50">03</span>
                 </div>
-                <h3 class="mt-4 text-pretty text-base font-medium text-foreground">At 5+ students, identity dissolves</h3>
+                <h3 class="mt-4 text-pretty text-base font-medium text-foreground">At 3+ students, identity dissolves</h3>
                 <p class="mt-1.5 text-sm leading-relaxed text-muted-foreground text-pretty">
                   The original asker disappears. The doubt becomes a collective, anonymous class signal.
                 </p>
@@ -921,14 +921,14 @@
 
               <div>
                 <label class="block text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">What are you confused about?</label>
-                <textarea id="doubt-question-input" required rows="3" placeholder="Describe what's not clicking. At 5 confused students, your name dissolves completely..." 
+                <textarea id="doubt-question-input" required rows="3" placeholder="Describe what's not clicking. At 3 confused students, your name dissolves completely..." 
                   class="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary resize-none"></textarea>
               </div>
 
               <div class="rounded-lg bg-secondary/50 p-3 text-xs text-muted-foreground flex items-start gap-2">
                 <span class="text-consensus mt-0.5">${Icons.shieldOff}</span>
                 <span>
-                  <strong>Silent & Anonymized:</strong> Your identity is only seen by TAs until 5 students agree. Once 5 students are confused, it becomes an anonymous Class Consensus.
+                  <strong>Silent & Anonymized:</strong> Your identity is only seen by TAs until 3 students agree. Once 3 students are confused, it becomes an anonymous Class Consensus.
                 </span>
               </div>
 
@@ -1142,11 +1142,11 @@
   // TA Dashboard Tab
   function renderTADashboardTab() {
     const pending = store.doubts.filter((d) => d.status !== "resolved");
-    const smallGroup = pending.filter((d) => d.confusionCount >= 2 && d.confusionCount < 5);
-    const consensusCount = pending.filter((d) => d.confusionCount >= 5);
+    const smallGroup = pending.filter((d) => d.confusionCount >= 2 && d.confusionCount < 3);
+    const consensusCount = pending.filter((d) => d.confusionCount >= 3);
     const resolvedCount = store.doubts.filter((d) => d.status === "resolved");
 
-    const topPriority = [...pending].sort((a, b) => b.confusionCount - a.confusionCount).slice(0, 4);
+    const topPriority = [...pending].sort((a, b) => b.confusionCount - a.confusionCount).slice(0, 2);
 
     return `
       <div class="space-y-8">
@@ -1166,11 +1166,11 @@
             <p class="mt-2 text-3xl font-semibold text-foreground">${pending.length}</p>
           </div>
           <div class="rounded-xl border border-border bg-card p-5 shadow-xs">
-            <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Small Group (2-4)</p>
+            <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Small Group (2)</p>
             <p class="mt-2 text-3xl font-semibold text-approaching-strong">${smallGroup.length}</p>
           </div>
           <div class="rounded-xl border border-consensus/30 bg-consensus-soft p-5 shadow-xs">
-            <p class="text-xs font-medium uppercase tracking-wider text-consensus-strong">Consensus Reached (5+)</p>
+            <p class="text-xs font-medium uppercase tracking-wider text-consensus-strong">Consensus Reached (3+)</p>
             <p class="mt-2 text-3xl font-semibold text-consensus-strong">${consensusCount.length}</p>
           </div>
           <div class="rounded-xl border border-border bg-card p-5 shadow-xs">
@@ -1324,7 +1324,7 @@
                 ? `<span class="inline-flex items-center gap-1 rounded-full bg-consensus-soft px-2 py-0.5 text-xs font-semibold text-consensus-strong">
                     ${Icons.shieldOff} Consensus
                    </span>`
-                : doubt.confusionCount >= 4
+                : doubt.confusionCount >= 2
                 ? `<span class="rounded-full bg-approaching-soft px-2 py-0.5 text-xs font-semibold text-approaching-strong">
                     Approaching
                    </span>`
@@ -1369,7 +1369,7 @@
   // 5. Professor Lecture View
   function renderProfessorView() {
     const consensusDoubts = store.doubts.filter(
-      (d) => d.confusionCount >= 5 && d.status !== "resolved"
+      (d) => d.confusionCount >= 3 && d.status !== "resolved"
     );
     const resolvedDoubts = store.doubts.filter((d) => d.status === "resolved");
 
@@ -1893,6 +1893,7 @@
     root.innerHTML = html;
     renderRoleSwitcher();
   }
+    window.renderApp = renderApp;
 
   // Document Ready
   document.addEventListener("DOMContentLoaded", () => {

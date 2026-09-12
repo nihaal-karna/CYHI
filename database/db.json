@@ -1,0 +1,15 @@
+{
+  "classrooms": [
+    {
+      "id": "class-cs101",
+      "code": "CS101",
+      "name": "Data Structures",
+      "lecture": "Live Lecture",
+      "activeStudents": 0,
+      "createdAt": "2026-09-13T00:00:00.000Z"
+    }
+  ],
+  "sessions": [],
+  "confusions": [],
+  "clusters": []
+}
