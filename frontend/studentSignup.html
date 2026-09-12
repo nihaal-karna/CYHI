@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Student Registration</title>
+
+    <link rel="stylesheet" href="/css/login.css">
+</head>
+<body>
+
+<div class="container">
+
+    <h1>Student Registration</h1>
+
+    <input type="text" id="name" placeholder="Full Name">
+
+    <input type="text" id="roll" placeholder="Roll Number">
+
+    <input type="email" id="email" placeholder="College Email">
+
+    <input type="password" id="password" placeholder="Password">
+
+    <button id="signupBtn">Register</button>
+
+    <p>Already have an account?</p>
+
+    <button class="back-btn" onclick="window.location.href='studentLogin.html'">
+        Login
+    </button>
+
+</div>
+
+<script type="module" src="js/firebase.js"></script>
+<script type="module" src="js/signup.js"></script>
+
+</body>
+</html>

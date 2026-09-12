@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Student Dashboard | SilentRaise</title>
+
+    <link rel="stylesheet" href="css/dashboard.css">
+</head>
+<body>
+
+    <div class="container">
+
+        <h1>🎓 SilentRaise - Student Dashboard</h1>
+
+        <h2>Selected Class</h2>
+        <p id="className"></p>
+
+        <hr>
+
+        <h2>📝 Ask a Doubt</h2>
+
+        <textarea
+            id="doubt"
+            placeholder="Ask your doubt anonymously..."
+        ></textarea>
+
+        <button id="postBtn">Post Doubt</button>
+
+        <hr>
+
+        <h2>📢 Anonymous Doubts</h2>
+
+        <div id="doubtsContainer"></div>
+
+        <hr>
+
+        <h2>💬 Anonymous Student Chat</h2>
+
+        <div id="chatBox"></div>
+
+        <input
+            type="text"
+            id="message"
+            placeholder="Type your message..."
+        >
+
+        <button id="sendBtn">
+            Send Message
+        </button>
+
+        <br><br>
+
+        <button id="logoutBtn">
+            Logout
+        </button>
+
+    </div>
+
+    <script type="module" src="js/dashboard.js"></script>
+
+</body>
+</html>
