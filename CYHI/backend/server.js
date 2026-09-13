@@ -4,7 +4,7 @@ const path = require("path");
 const crypto = require("crypto");
 const url = require("url");
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 const ROOT = path.join(__dirname, "..");
 const FRONTEND_DIR = path.join(ROOT, "frontend");
@@ -2135,6 +2135,7 @@ const server =
 
 server.listen(
   PORT,
+  "0.0.0.0",
   () => {
 
     console.log("");
