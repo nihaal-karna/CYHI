@@ -1,0 +1,161 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function sessionPath() {
+      return /databases/$(database)/documents/accessSessions/$(request.auth.uid);
+    }
+
+    function hasSession() {
+      return signedIn() && exists(sessionPath());
+    }
+
+    function sessionData() {
+      return get(sessionPath()).data;
+    }
+
+    function sameCourse(courseCode) {
+      return hasSession() && sessionData().courseCode == courseCode;
+    }
+
+    function isStaff() {
+      return hasSession() && sessionData().role in ['ta', 'professor'];
+    }
+
+    // Student and enrollment documents are readable only by exact document ID.
+    // The client uses these gets to verify the join form; listing the roster is denied.
+    match /students/{studentId} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow write: if false;
+    }
+
+    match /courses/{courseCode} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow write: if false;
+    }
+
+    match /enrollments/{studentId} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow write: if false;
+    }
+
+    // The anonymous Firebase UID is bound to the verified classroom/course.
+    // Student sessions can only be created when the student + course + enrollment exist.
+    // TA/professor roles remain a hackathon-MVP role selector, so they are not strong
+    // institutional authentication. Replace this with university SSO/custom claims later.
+    match /accessSessions/{userId} {
+      allow get: if signedIn() && request.auth.uid == userId;
+      allow list, delete: if false;
+
+      allow create, update: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.courseCode is string
+        && (
+          (
+            request.resource.data.role == 'student'
+            && request.resource.data.studentId is string
+            && (
+              (
+                exists(/databases/$(database)/documents/courses/$(request.resource.data.courseCode))
+                && exists(/databases/$(database)/documents/students/$(request.resource.data.studentId))
+                && exists(/databases/$(database)/documents/enrollments/$(request.resource.data.studentId))
+                && get(/databases/$(database)/documents/enrollments/$(request.resource.data.studentId)).data.courses.hasAny([request.resource.data.courseCode])
+              )
+              // Development/demo compatibility only. The frontend uses this
+              // only when the supplied Firestore seed has not been created yet.
+              // Seed the collections before presenting this as production security.
+              || request.resource.data.accessSource == 'bundled-demo'
+            )
+          )
+          || request.resource.data.role in ['ta', 'professor']
+        );
+    }
+
+    match /presence/{userId} {
+      allow read: if signedIn() && sameCourse(resource.data.classId);
+      allow create, update: if signedIn()
+        && request.auth.uid == userId
+        && sameCourse(request.resource.data.classId);
+      allow delete: if signedIn() && request.auth.uid == userId;
+    }
+
+    // Each professor owns one token document containing an array of tokens
+    // for their browsers/devices. Firebase Admin Cloud Functions bypass these
+    // client rules when sending push notifications and removing invalid tokens.
+    match /fcmTokens/{userId} {
+      allow get: if signedIn() && request.auth.uid == userId;
+      allow list, delete: if false;
+
+      allow create, update: if signedIn()
+        && request.auth.uid == userId
+        && hasSession()
+        && sessionData().role == 'professor'
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.role == 'professor'
+        && request.resource.data.courseCode == sessionData().courseCode
+        && request.resource.data.tokens is list;
+    }
+
+    match /confusions/{doubtId} {
+      allow read: if signedIn() && sameCourse(resource.data.classId);
+
+      allow create: if signedIn()
+        && hasSession()
+        && sessionData().role == 'student'
+        && sameCourse(request.resource.data.classId)
+        && request.resource.data.authorUid == request.auth.uid
+        && request.resource.data.status == 'open';
+
+      // Students may only contribute to the aggregate consensus fields.
+      // TA/professor sessions may answer/resolve the doubt.
+      allow update: if signedIn()
+        && sameCourse(resource.data.classId)
+        && (
+          isStaff()
+          || (
+            sessionData().role == 'student'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'confusionCount',
+              'contributors',
+              'consensusReached',
+              'consensusReachedAt',
+              'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        function parentDoubt() {
+          return get(/databases/$(database)/documents/confusions/$(doubtId)).data;
+        }
+
+        allow read: if signedIn() && sameCourse(parentDoubt().classId);
+
+        allow create: if signedIn()
+          && hasSession()
+          && sameCourse(parentDoubt().classId)
+          && request.resource.data.authorUid == request.auth.uid
+          && request.resource.data.role == sessionData().role;
+
+        // Once consensus is reached, the existing app deletes student messages
+        // to preserve its identity-dissolution behavior.
+        allow delete: if signedIn()
+          && sameCourse(parentDoubt().classId)
+          && parentDoubt().consensusReached == true
+          && resource.data.role == 'student';
+
+        allow update: if false;
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "accessSessions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "role", "order": "ASCENDING" },
+        { "fieldPath": "courseCode", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

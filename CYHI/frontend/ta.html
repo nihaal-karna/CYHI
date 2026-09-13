@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Join Session · Consensus</title>
+  <title>TA Dashboard · Consensus</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400..600;1,6..72,400..600&display=swap" rel="stylesheet">
@@ -12,10 +12,17 @@
 </head>
 <body class="font-sans antialiased text-foreground bg-background">
   <div id="app-root" class="view-container"></div>
+  <script src="js/firebase-messaging-config.js"></script>
+  <script src="data/demo-access.js"></script>
   <script src="js/consensus-data.js"></script>
   <script>
-    store.setCurrentView("join");
-    window.location.hash = "join";
+    if (!store.currentUser?.accessVerified || store.currentUser.role !== "ta") {
+      store.setCurrentView("join");
+      window.location.hash = "ta";
+    } else {
+      store.setCurrentView("ta");
+      window.location.hash = "ta";
+    }
   </script>
   <script src="js/consensus.js"></script>
 </body>

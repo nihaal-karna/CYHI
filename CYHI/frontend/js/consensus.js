@@ -12,6 +12,7 @@
   let switcherExpanded = true;
   let answerModalDoubtId = null;
   let resolveModalDoubtId = null;
+  let requestedJoinRole = "student";
 
   // Icons Helper
   const Icons = {
@@ -70,44 +71,135 @@
       .replace(/'/g, "&#039;");
   }
 
+
+  function professorAlertStorageKey() {
+    return `cyhi_professor_priority_high_${COURSE_INFO.code}`;
+  }
+
+  function activeAttentionDoubts() {
+    return store.doubts.filter((d) => d.status !== "resolved");
+  }
+
+  function maybeNotifyProfessor() {
+    if (store.currentView !== "professor" || store.currentUser?.role !== "professor") return;
+
+    const count = activeAttentionDoubts().length;
+    const key = professorAlertStorageKey();
+    const wasHigh = localStorage.getItem(key) === "1";
+    const isHigh = count > 3;
+
+    if (!isHigh) {
+      localStorage.setItem(key, "0");
+      return;
+    }
+
+    if (isHigh && !wasHigh) {
+      localStorage.setItem(key, "1");
+
+      if ("Notification" in window && Notification.permission === "granted") {
+        try {
+          const notification = new Notification(`Classroom Alert: ${count} doubts need attention`, {
+            body: "Open the Professor dashboard to review unresolved classroom doubts.",
+            tag: `cyhi-priority-${COURSE_INFO.code}`,
+            renotify: false
+          });
+
+          notification.onclick = () => {
+            window.focus();
+            store.setCurrentView("professor");
+            window.location.hash = "professor";
+            renderApp();
+            setTimeout(() => document.getElementById("professor-attention-list")?.scrollIntoView({ behavior: "smooth" }), 50);
+            notification.close();
+          };
+        } catch (_) {}
+      }
+    }
+  }
+
+  async function requestProfessorNotificationPermission() {
+    const result = await store.enableProfessorPushNotifications();
+
+    if (result?.ok && activeAttentionDoubts().length > 3) {
+      localStorage.setItem(professorAlertStorageKey(), "0");
+      maybeNotifyProfessor();
+    }
+
+    if (!result?.ok && result?.message) {
+      window.alert(result.message);
+    }
+
+    return result?.status || (("Notification" in window) ? Notification.permission : "unsupported");
+  }
+
   // Navigation Controller
   window.navigateTo = function (view, role) {
-    if (role && DEFAULT_USERS[role]) {
-      store.setUser(DEFAULT_USERS[role]);
+    if (view === "join" && !role) requestedJoinRole = "student";
+    const protectedView = ["student", "ta", "professor"].includes(view);
+    const hasVerifiedSession = !!store.currentUser?.accessVerified && store.currentUser?.role === view;
+
+    // Role cards and the demo switcher now go through the join screen instead
+    // of silently manufacturing a student/staff identity in the browser.
+    if ((role && ["student", "ta", "professor"].includes(role)) || (protectedView && !hasVerifiedSession)) {
+      requestedJoinRole = role && ["student", "ta", "professor"].includes(role) ? role : view;
+      store.setCurrentView("join");
+      window.location.hash = "join";
+      renderApp();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
     }
+
     store.setCurrentView(view);
     window.location.hash = view;
     renderApp();
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  // Switch role directly from floating switcher or header
+  // The floating role switcher remains useful for the demo, but switching
+  // roles requires the same join/verification flow as the main entry point.
   window.switchRole = function (role) {
-    if (DEFAULT_USERS[role]) {
-      store.setUser(DEFAULT_USERS[role]);
+    if (!["student", "ta", "professor"].includes(role)) return;
+    if (store.currentUser?.accessVerified && store.currentUser?.role === role) {
       store.setCurrentView(role);
       window.location.hash = role;
       renderApp();
+      return;
     }
+    requestedJoinRole = role;
+    store.setCurrentView("join");
+    window.location.hash = "join";
+    renderApp();
   };
 
   // Initialize view from hash
   function initRouting() {
     const hash = window.location.hash.replace("#", "");
     if (["landing", "join", "student", "ta", "professor"].includes(hash)) {
-      store.setCurrentView(hash);
-      if (["student", "ta", "professor"].includes(hash) && !store.currentUser) {
-        store.setUser(DEFAULT_USERS[hash]);
+      if (["student", "ta", "professor"].includes(hash) &&
+          (!store.currentUser?.accessVerified || store.currentUser?.role !== hash)) {
+        requestedJoinRole = hash;
+        store.setCurrentView("join");
+        window.location.hash = "join";
+      } else {
+        store.setCurrentView(hash);
       }
     } else {
       store.setCurrentView("landing");
     }
+
     window.addEventListener("hashchange", () => {
       const h = window.location.hash.replace("#", "");
-      if (["landing", "join", "student", "ta", "professor"].includes(h)) {
+      if (!["landing", "join", "student", "ta", "professor"].includes(h)) return;
+
+      if (["student", "ta", "professor"].includes(h) &&
+          (!store.currentUser?.accessVerified || store.currentUser?.role !== h)) {
+        requestedJoinRole = h;
+        store.setCurrentView("join");
+        if (window.location.hash !== "#join") window.location.hash = "join";
+      } else {
         store.setCurrentView(h);
-        renderApp();
       }
+      renderApp();
     });
   }
 
@@ -172,32 +264,72 @@
       }
     },
 
-    handleRaiseDoubt: function (e) {
+    handleRaiseDoubt: async function (e) {
       e.preventDefault();
       const topicInput = document.getElementById("doubt-topic-input");
       const questionInput = document.getElementById("doubt-question-input");
       const categorySelect = document.getElementById("doubt-category-select");
+      const messageEl = document.getElementById("doubt-form-message");
+      const submitBtn = e.currentTarget?.querySelector('button[type="submit"]');
 
-      const topic = topicInput.value;
-      const question = questionInput.value;
+      const topic = topicInput?.value || "";
+      const question = questionInput?.value || "";
       const category = categorySelect ? categorySelect.value : "Concept";
 
       if (!topic.trim() || !question.trim()) return;
+      if (messageEl) {
+        messageEl.textContent = "Checking question...";
+        messageEl.className = "text-xs text-muted-foreground";
+      }
+      if (submitBtn) submitBtn.disabled = true;
 
-      store.addDoubt({ topic, question, category });
+      const result = await store.addDoubt({ topic, question, category });
+
+      if (!result?.ok) {
+        if (messageEl) {
+          messageEl.textContent = result?.message || "Please enter a meaningful academic question.";
+          messageEl.className = "text-xs font-medium text-destructive";
+        }
+        if (submitBtn) submitBtn.disabled = false;
+        return;
+      }
+
       topicInput.value = "";
       questionInput.value = "";
       activeTab = "doubts";
       renderApp();
     },
 
-    handleSendMessage: function (e, doubtId) {
+    handleSendMessage: async function (e, doubtId) {
       e.preventDefault();
       const input = document.getElementById("chat-message-input");
+      const errorEl = document.getElementById("chat-message-error");
+      const submitBtn = e.currentTarget?.querySelector('button[type="submit"]');
       if (!input || !input.value.trim()) return;
-      store.addMessage(doubtId, input.value);
+
+      const text = input.value;
+      if (submitBtn) submitBtn.disabled = true;
+      if (errorEl) errorEl.textContent = "";
+
+      const result = await store.addMessage(doubtId, text);
+      if (!result?.ok) {
+        if (errorEl) errorEl.textContent = result?.message || "Message could not be sent.";
+        if (submitBtn) submitBtn.disabled = false;
+        return;
+      }
+
       input.value = "";
       renderApp();
+    },
+
+    enableProfessorNotifications: async function () {
+      const permission = await requestProfessorNotificationPermission();
+      renderApp();
+      return permission;
+    },
+
+    viewProfessorAttention: function () {
+      document.getElementById("professor-attention-list")?.scrollIntoView({ behavior: "smooth", block: "start" });
     },
 
     openAnswerModal: function (doubtId) {
@@ -210,11 +342,20 @@
       renderAnswerModal();
     },
 
-    submitAnswer: function (e) {
+    submitAnswer: async function (e) {
       e.preventDefault();
       const answerInput = document.getElementById("answer-text-input");
+      const submitBtn = e.currentTarget?.querySelector('button[type="submit"]');
       if (!answerInput || !answerInput.value.trim() || !answerModalDoubtId) return;
-      store.answerDoubt(answerModalDoubtId, answerInput.value);
+      if (submitBtn) submitBtn.disabled = true;
+
+      const result = await store.answerDoubt(answerModalDoubtId, answerInput.value);
+      if (!result?.ok) {
+        if (submitBtn) submitBtn.disabled = false;
+        window.alert(result?.message || "The answer could not be saved.");
+        return;
+      }
+
       answerModalDoubtId = null;
       renderAnswerModal();
       renderApp();
@@ -674,55 +815,91 @@
 
   // 2. Join Session View
   function renderJoinView() {
-    let selectedRole = "student";
+    let selectedRole = ["student", "ta", "professor"].includes(requestedJoinRole) ? requestedJoinRole : "student";
+    const initialIsStudent = selectedRole === "student";
+    const initialRoleText = selectedRole === "student" ? "Student" : selectedRole === "ta" ? "Teaching Assistant" : "Professor";
 
     window.selectJoinRole = function (role) {
       selectedRole = role;
-      const profile = DEFAULT_USERS[role];
-      document.getElementById("join-name").value = profile.name;
-      document.getElementById("join-email").value = profile.email;
       const rollContainer = document.getElementById("join-roll-container");
+      const nameContainer = document.getElementById("join-name-container");
+      const emailContainer = document.getElementById("join-email-container");
+      const rollInput = document.getElementById("join-roll");
+      const nameInput = document.getElementById("join-name");
+      const emailInput = document.getElementById("join-email");
+      const errorEl = document.getElementById("join-error");
+
       if (role === "student") {
-        rollContainer.classList.remove("hidden");
-        document.getElementById("join-roll").value = profile.roll;
+        rollContainer?.classList.remove("hidden");
+        nameContainer?.classList.add("hidden");
+        emailContainer?.classList.add("hidden");
+        if (rollInput) rollInput.required = true;
+        if (nameInput) nameInput.required = false;
+        if (emailInput) emailInput.required = false;
       } else {
-        rollContainer.classList.add("hidden");
+        rollContainer?.classList.add("hidden");
+        nameContainer?.classList.remove("hidden");
+        emailContainer?.classList.remove("hidden");
+        if (rollInput) rollInput.required = false;
+        if (nameInput) nameInput.required = true;
+        if (emailInput) emailInput.required = false;
       }
 
-      // Update button text
+      if (errorEl) errorEl.textContent = "";
       const roleText = role === "student" ? "Student" : role === "ta" ? "Teaching Assistant" : "Professor";
       document.getElementById("join-submit-btn").textContent = `Join as ${roleText}`;
 
-      // Update role buttons
       ["student", "ta", "professor"].forEach((r) => {
         const btn = document.getElementById(`role-btn-${r}`);
         if (btn) {
-          if (r === role) {
-            btn.className = "flex-1 rounded-lg border border-primary bg-primary/5 py-2 text-sm font-medium text-primary shadow-xs";
-          } else {
-            btn.className = "flex-1 rounded-lg border border-border bg-card py-2 text-sm font-medium text-muted-foreground hover:bg-secondary";
-          }
+          btn.className = r === role
+            ? "flex-1 rounded-lg border border-primary bg-primary/5 py-2 text-sm font-medium text-primary shadow-xs"
+            : "flex-1 rounded-lg border border-border bg-card py-2 text-sm font-medium text-muted-foreground hover:bg-secondary";
         }
       });
     };
 
-    window.handleJoinSubmit = function (e) {
+    window.handleJoinSubmit = async function (e) {
       e.preventDefault();
-      const name = document.getElementById("join-name").value;
-      const email = document.getElementById("join-email").value;
-      const roll = document.getElementById("join-roll").value;
-      const course = document.getElementById("join-course").value;
+      const name = document.getElementById("join-name")?.value || "";
+      const email = document.getElementById("join-email")?.value || "";
+      const roll = document.getElementById("join-roll")?.value || "";
+      const course = document.getElementById("join-course")?.value || "";
+      const errorEl = document.getElementById("join-error");
+      const submitBtn = document.getElementById("join-submit-btn");
 
-      const newUser = {
-        name: name.trim() || DEFAULT_USERS[selectedRole].name,
-        email: email.trim() || DEFAULT_USERS[selectedRole].email,
-        roll: selectedRole === "student" ? roll.trim() || "23CSE101" : "",
-        courseCode: course.trim() || "CS101",
-        role: selectedRole
-      };
+      if (errorEl) {
+        errorEl.textContent = "Verifying access...";
+        errorEl.className = "text-xs text-muted-foreground";
+      }
+      if (submitBtn) submitBtn.disabled = true;
 
-      store.setUser(newUser);
-      navigateTo(selectedRole);
+      const result = await store.authorizeJoin({
+        role: selectedRole,
+        studentId: roll,
+        courseCode: course,
+        name,
+        email
+      });
+
+      if (!result?.allowed) {
+        if (errorEl) {
+          errorEl.textContent = result?.message || "Unable to join this course.";
+          errorEl.className = "text-xs font-medium text-destructive";
+        }
+        if (submitBtn) submitBtn.disabled = false;
+        return;
+      }
+
+      store.setUser(result.user);
+      store.setCurrentView(selectedRole);
+      window.location.hash = selectedRole;
+      renderApp();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+
+      if (selectedRole === "professor") {
+        requestProfessorNotificationPermission().catch(() => {});
+      }
     };
 
     return `
@@ -733,7 +910,7 @@
               ${Icons.logo}
               <span class="block text-sm font-semibold tracking-tight text-foreground">Consensus</span>
             </button>
-            <button type="button" onclick="navigateTo('landing')" 
+            <button type="button" onclick="navigateTo('landing')"
               class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
               ${Icons.arrowLeft}
               Back
@@ -744,78 +921,67 @@
         <div class="mx-auto max-w-lg px-4 py-12 sm:px-6">
           <div class="rounded-2xl border border-border bg-card p-6 shadow-sm sm:p-8">
             <div class="text-center">
-              <h1 class="text-balance text-3xl font-medium tracking-tight text-foreground font-serif">
-                Join a Session
-              </h1>
-              <p class="mt-2 text-sm text-muted-foreground">
-                Experience the classroom from any perspective.
-              </p>
+              <h1 class="text-balance text-3xl font-medium tracking-tight text-foreground font-serif">Join a Session</h1>
+              <p class="mt-2 text-sm text-muted-foreground">Students are verified against Firestore enrollment. The bundled demo roster is used automatically until the demo Firestore records are seeded.</p>
             </div>
 
-            <!-- Role Selector -->
             <div class="mt-6">
-              <label class="block text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-                Choose your role
-              </label>
+              <label class="block text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Choose your role</label>
               <div class="flex gap-2">
-                <button type="button" id="role-btn-student" onclick="selectJoinRole('student')" 
-                  class="flex-1 rounded-lg border border-primary bg-primary/5 py-2 text-sm font-medium text-primary shadow-xs">
-                  Student
-                </button>
-                <button type="button" id="role-btn-ta" onclick="selectJoinRole('ta')" 
-                  class="flex-1 rounded-lg border border-border bg-card py-2 text-sm font-medium text-muted-foreground hover:bg-secondary">
-                  TA
-                </button>
-                <button type="button" id="role-btn-professor" onclick="selectJoinRole('professor')" 
-                  class="flex-1 rounded-lg border border-border bg-card py-2 text-sm font-medium text-muted-foreground hover:bg-secondary">
-                  Professor
-                </button>
+                <button type="button" id="role-btn-student" onclick="selectJoinRole('student')"
+                  class="flex-1 rounded-lg border ${selectedRole === "student" ? "border-primary bg-primary/5 text-primary shadow-xs" : "border-border bg-card text-muted-foreground hover:bg-secondary"} py-2 text-sm font-medium">Student</button>
+                <button type="button" id="role-btn-ta" onclick="selectJoinRole('ta')"
+                  class="flex-1 rounded-lg border ${selectedRole === "ta" ? "border-primary bg-primary/5 text-primary shadow-xs" : "border-border bg-card text-muted-foreground hover:bg-secondary"} py-2 text-sm font-medium">TA</button>
+                <button type="button" id="role-btn-professor" onclick="selectJoinRole('professor')"
+                  class="flex-1 rounded-lg border ${selectedRole === "professor" ? "border-primary bg-primary/5 text-primary shadow-xs" : "border-border bg-card text-muted-foreground hover:bg-secondary"} py-2 text-sm font-medium">Professor</button>
               </div>
             </div>
 
             <form onsubmit="handleJoinSubmit(event)" class="mt-6 space-y-4">
-              <div>
+              <div id="join-name-container" class="${initialIsStudent ? "hidden" : ""}">
                 <label class="block text-xs font-semibold uppercase tracking-wider text-muted-foreground">Full Name</label>
-                <input type="text" id="join-name" required value="Rahul Verma" 
+                <input type="text" id="join-name" ${initialIsStudent ? "" : "required"} placeholder="Your name"
                   class="mt-1.5 block w-full rounded-lg border border-input bg-background px-3.5 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary" />
               </div>
 
-              <div id="join-roll-container">
-                <label class="block text-xs font-semibold uppercase tracking-wider text-muted-foreground">Roll / Student ID</label>
-                <input type="text" id="join-roll" value="23CSE101" 
+              <div id="join-roll-container" class="${initialIsStudent ? "" : "hidden"}">
+                <label class="block text-xs font-semibold uppercase tracking-wider text-muted-foreground">Student ID</label>
+                <input type="text" id="join-roll" ${initialIsStudent ? "required" : ""} autocomplete="off" placeholder="e.g. 25BCS110"
                   class="mt-1.5 block w-full rounded-lg border border-input bg-background px-3.5 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary" />
+                <p class="mt-1 text-[0.7rem] text-muted-foreground">Your name and section are loaded from the students collection after verification.</p>
               </div>
 
-              <div>
-                <label class="block text-xs font-semibold uppercase tracking-wider text-muted-foreground">Email</label>
-                <input type="email" id="join-email" required value="rahul.v@university.edu" 
+              <div id="join-email-container" class="${initialIsStudent ? "hidden" : ""}">
+                <label class="block text-xs font-semibold uppercase tracking-wider text-muted-foreground">Email (optional)</label>
+                <input type="email" id="join-email" placeholder="name@university.edu"
                   class="mt-1.5 block w-full rounded-lg border border-input bg-background px-3.5 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary" />
               </div>
 
               <div>
                 <label class="block text-xs font-semibold uppercase tracking-wider text-muted-foreground">Course Code</label>
-                <input type="text" id="join-course" required value="CS101" 
-                  class="mt-1.5 block w-full rounded-lg border border-input bg-background px-3.5 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary" />
+                <input type="text" id="join-course" required autocomplete="off" placeholder="e.g. IT2001"
+                  class="mt-1.5 block w-full rounded-lg border border-input bg-background px-3.5 py-2 text-sm uppercase text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary" />
               </div>
 
+              <div id="join-error" class="text-xs text-muted-foreground" aria-live="polite"></div>
+
               <div class="pt-2">
-                <button type="submit" id="join-submit-btn" 
-                  class="w-full rounded-lg bg-primary py-2.5 text-center text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 transition-all cursor-pointer">
-                  Join as Student
+                <button type="submit" id="join-submit-btn"
+                  class="w-full rounded-lg bg-primary py-2.5 text-center text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:cursor-wait disabled:opacity-60 transition-all cursor-pointer">
+                  ${`Join as ${initialRoleText}`}
                 </button>
               </div>
             </form>
 
             <div class="mt-6 border-t border-border pt-4 text-center">
-              <p class="text-xs text-muted-foreground">
-                Demo accounts are pre-filled. You can also edit any field.
-              </p>
+              <p class="text-xs text-muted-foreground">Student/course access is checked against Firestore first; the bundled demo seed is only a compatibility fallback for an unseeded project.</p>
             </div>
           </div>
         </div>
       </div>
     `;
   }
+
 
   // 3. Student Workspace
   function renderStudentView() {
@@ -866,6 +1032,7 @@
     const activeDoubts = store.doubts.filter((d) => d.status !== "resolved");
 
     return `
+      ${store.realtimeError ? `<div class="mb-4 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">${escapeHTML(store.realtimeError)}</div>` : ""}
       <div class="grid gap-8 lg:grid-cols-12">
         <!-- Left: Doubts List (7 cols) -->
         <div class="space-y-4 lg:col-span-7">
@@ -932,8 +1099,10 @@
                 </span>
               </div>
 
+              <div id="doubt-form-message" class="text-xs text-muted-foreground" aria-live="polite"></div>
+
               <button type="submit" 
-                class="w-full rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 transition-all cursor-pointer">
+                class="w-full rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:cursor-wait disabled:opacity-60 transition-all cursor-pointer">
                 Raise Doubt Silently
               </button>
             </form>
@@ -998,6 +1167,16 @@
             </p>
           </div>
 
+          ${doubt.taAnswer ? `
+            <div class="mb-4 rounded-xl border border-border bg-accent/50 p-4">
+              <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <span class="font-semibold text-foreground">TA Response${doubt.taName ? ` · ${escapeHTML(doubt.taName)}` : ""}</span>
+                <span class="font-medium text-resolved-strong">Answered${doubt.answeredAt ? ` · ${escapeHTML(doubt.answeredAt)}` : ""}</span>
+              </div>
+              <p class="mt-2 text-sm text-foreground">${escapeHTML(doubt.taAnswer)}</p>
+            </div>
+          ` : ""}
+
           <!-- Message bubbles -->
           <div class="flex-1 overflow-y-auto space-y-3 pr-2 mb-4">
             ${
@@ -1045,11 +1224,12 @@
           </div>
 
           <!-- Message input -->
+          <div id="chat-message-error" class="mb-1 min-h-4 text-xs font-medium text-destructive" aria-live="polite"></div>
           <form onsubmit="consensusActions.handleSendMessage(event, '${doubt.id}')" class="flex gap-2 pt-2 border-t border-border">
             <input type="text" id="chat-message-input" placeholder="Type a response or clarification..." required 
               class="flex-1 rounded-lg border border-input bg-background px-3.5 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary" />
             <button type="submit" 
-              class="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors cursor-pointer">
+              class="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-wait disabled:opacity-60 transition-colors cursor-pointer">
               ${Icons.send}
               Reply
             </button>
@@ -1141,12 +1321,13 @@
 
   // TA Dashboard Tab
   function renderTADashboardTab() {
-    const pending = store.doubts.filter((d) => d.status !== "resolved");
-    const smallGroup = pending.filter((d) => d.confusionCount >= 2 && d.confusionCount < 3);
-    const consensusCount = pending.filter((d) => d.confusionCount >= 3);
+    const unresolved = store.doubts.filter((d) => d.status !== "resolved");
+    const pending = unresolved.filter((d) => d.confusionCount < CONSENSUS_THRESHOLD);
+    const smallGroup = unresolved.filter((d) => d.confusionCount >= 2 && d.confusionCount < CONSENSUS_THRESHOLD);
+    const consensusCount = unresolved.filter((d) => d.confusionCount >= CONSENSUS_THRESHOLD);
     const resolvedCount = store.doubts.filter((d) => d.status === "resolved");
 
-    const topPriority = [...pending].sort((a, b) => b.confusionCount - a.confusionCount).slice(0, 2);
+    const topPriority = [...unresolved].sort((a, b) => b.confusionCount - a.confusionCount).slice(0, 2);
 
     return `
       <div class="space-y-8">
@@ -1160,7 +1341,11 @@
         </div>
 
         <!-- Metric Cards -->
-        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          <div class="rounded-xl border border-border bg-card p-5 shadow-xs">
+            <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Active Students</p>
+            <p class="mt-2 text-3xl font-semibold text-foreground">${COURSE_INFO.activeStudents}</p>
+          </div>
           <div class="rounded-xl border border-border bg-card p-5 shadow-xs">
             <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Pending Doubts</p>
             <p class="mt-2 text-3xl font-semibold text-foreground">${pending.length}</p>
@@ -1211,7 +1396,7 @@
         <div>
           <h1 class="text-2xl font-semibold tracking-tight text-foreground font-serif">Doubt Queue</h1>
           <p class="mt-1 text-sm text-muted-foreground">
-            Ordered by priority. Student identity is visible below 5 students—hidden once consensus is reached.
+            Ordered by priority. Student identity is visible before consensus and dissolved once the 3-student threshold is reached.
           </p>
         </div>
 
@@ -1297,7 +1482,7 @@
             </div>
             <div class="rounded-lg bg-secondary/40 p-3 text-center">
               <span class="text-xs text-muted-foreground">Currently Connected</span>
-              <p class="text-xl font-bold text-resolved-strong mt-1">32</p>
+              <p class="text-xl font-bold text-resolved-strong mt-1">${COURSE_INFO.activeStudents}</p>
             </div>
             <div class="rounded-lg bg-secondary/40 p-3 text-center">
               <span class="text-xs text-muted-foreground">Doubts Raised Today</span>
@@ -1368,17 +1553,18 @@
 
   // 5. Professor Lecture View
   function renderProfessorView() {
-    const consensusDoubts = store.doubts.filter(
-      (d) => d.confusionCount >= 3 && d.status !== "resolved"
-    );
+    const attentionDoubts = activeAttentionDoubts()
+      .sort((a, b) => b.confusionCount - a.confusionCount || a.ageMinutes - b.ageMinutes);
+    const consensusDoubts = attentionDoubts.filter((d) => d.confusionCount >= CONSENSUS_THRESHOLD);
     const resolvedDoubts = store.doubts.filter((d) => d.status === "resolved");
-
     const topDoubt = consensusDoubts[0];
     const otherConsensus = consensusDoubts.slice(1);
+    const highPriority = attentionDoubts.length > 3;
+    const commonTopics = [...new Set(attentionDoubts.slice(0, 5).map((d) => d.topic))].slice(0, 3);
+    const notificationState = "Notification" in window ? Notification.permission : "unsupported";
 
     return `
       <div class="min-h-screen pb-20">
-        <!-- Professor Header -->
         <header class="sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur-md">
           <div class="mx-auto flex h-15 max-w-6xl items-center justify-between px-4 sm:px-6 lg:px-8">
             <div class="flex items-center gap-4">
@@ -1393,148 +1579,149 @@
               </div>
             </div>
 
-            <div class="flex items-center gap-3">
+            <div class="flex items-center gap-2">
+              ${notificationState === "granted" ? `
+                <span class="hidden sm:inline-flex items-center gap-1.5 rounded-full bg-resolved-soft px-2.5 py-0.5 text-xs font-medium text-resolved-strong">${Icons.bell} Alerts enabled</span>
+              ` : notificationState === "default" ? `
+                <button type="button" onclick="consensusActions.enableProfessorNotifications()" class="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-secondary">${Icons.bell} Enable desktop alerts</button>
+              ` : ""}
               <span class="inline-flex items-center gap-1.5 rounded-full bg-resolved-soft px-2.5 py-0.5 text-xs font-medium text-resolved-strong">
                 <span class="size-1.5 rounded-full bg-resolved pulse-dot"></span>
                 Lecture Mode Active
               </span>
-              <button type="button" onclick="navigateTo('landing')" 
-                class="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground">
-                Exit
-              </button>
+              <button type="button" onclick="consensusActions.leaveSession()"
+                class="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground">Exit</button>
             </div>
           </div>
         </header>
 
-        <main class="mx-auto max-w-5xl px-4 py-10 sm:px-6 lg:px-8 space-y-10 fade-in">
-          <!-- Intro Notice -->
+        <main class="mx-auto max-w-5xl px-4 py-10 sm:px-6 lg:px-8 space-y-8 fade-in">
+          ${highPriority ? `
+            <div id="professor-priority-alert" class="rounded-2xl border-2 border-destructive/45 bg-destructive/5 p-5 shadow-sm sm:p-6" role="alert">
+              <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div class="flex items-center gap-2 text-destructive font-semibold">${Icons.bell}<span>CLASSROOM CONFUSION ALERT</span></div>
+                  <p class="mt-2 text-lg font-semibold text-foreground">${attentionDoubts.length} active doubts currently need attention.</p>
+                  <p class="mt-1 text-sm text-muted-foreground">${commonTopics.length ? `Common topics: ${commonTopics.map(escapeHTML).join(", ")}. ` : ""}Consider addressing these during class.</p>
+                </div>
+                <button type="button" onclick="consensusActions.viewProfessorAttention()" class="shrink-0 rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-white hover:opacity-90">View Doubts</button>
+              </div>
+            </div>
+          ` : ""}
+
           <div class="text-center max-w-xl mx-auto">
-            <span class="inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">
-              ${Icons.eye}
-              Calm Lecture Display
-            </span>
-            <h1 class="mt-3 text-3xl font-serif font-medium text-foreground tracking-tight">
-              Classroom Consensus Topics
-            </h1>
-            <p class="mt-2 text-sm text-muted-foreground">
-              Only doubts reaching the 5-student consensus threshold appear here. All individual identities are dissolved.
-            </p>
+            <span class="inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">${Icons.eye} Calm Lecture Display</span>
+            <h1 class="mt-3 text-3xl font-serif font-medium text-foreground tracking-tight">Classroom Consensus Topics</h1>
+            <p class="mt-2 text-sm text-muted-foreground">Consensus appears at ${CONSENSUS_THRESHOLD} confused students. Individual identities are dissolved when that threshold is reached.</p>
           </div>
 
-          <!-- Top Priority Consensus Card -->
-          ${
-            topDoubt
-              ? `
+          <div class="grid gap-4 sm:grid-cols-3">
+            <div class="rounded-xl border border-border bg-card p-4 shadow-xs">
+              <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Active doubts</p>
+              <p class="mt-2 text-3xl font-semibold text-foreground">${attentionDoubts.length}</p>
+            </div>
+            <div class="rounded-xl border border-consensus/30 bg-consensus-soft p-4 shadow-xs">
+              <p class="text-xs font-medium uppercase tracking-wider text-consensus-strong">Consensus reached</p>
+              <p class="mt-2 text-3xl font-semibold text-consensus-strong">${consensusDoubts.length}</p>
+            </div>
+            <div class="rounded-xl border border-border bg-card p-4 shadow-xs">
+              <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Resolved</p>
+              <p class="mt-2 text-3xl font-semibold text-resolved-strong">${resolvedDoubts.length}</p>
+            </div>
+          </div>
+
+          ${topDoubt ? `
             <div class="rounded-2xl border-2 border-consensus/50 bg-consensus-soft/30 p-6 sm:p-8 shadow-md">
               <div class="flex items-center justify-between">
-                <span class="inline-flex items-center gap-1.5 rounded-full bg-consensus-soft px-3 py-1 text-xs font-bold text-consensus-strong">
-                  ${Icons.shieldOff}
-                  Classroom Consensus Reached
-                </span>
+                <span class="inline-flex items-center gap-1.5 rounded-full bg-consensus-soft px-3 py-1 text-xs font-bold text-consensus-strong">${Icons.shieldOff} Classroom Consensus Reached</span>
                 <span class="text-xs font-medium text-muted-foreground">${formatAge(topDoubt.ageMinutes)}</span>
               </div>
-
               <div class="mt-4">
                 <span class="text-sm font-semibold uppercase tracking-wider text-consensus">${escapeHTML(topDoubt.topic)}</span>
-                <h2 class="mt-1 text-2xl font-serif font-medium text-foreground sm:text-3xl">
-                  ${escapeHTML(topDoubt.question)}
-                </h2>
+                <h2 class="mt-1 text-2xl font-serif font-medium text-foreground sm:text-3xl">${escapeHTML(topDoubt.question)}</h2>
               </div>
-
               <div class="mt-6 flex flex-wrap items-center justify-between gap-4 border-t border-consensus/20 pt-4">
                 <div class="flex items-center gap-3">
-                  <span class="flex size-9 items-center justify-center rounded-lg bg-consensus text-primary-foreground font-bold">
-                    ${topDoubt.confusionCount}
-                  </span>
-                  <span class="text-sm font-medium text-foreground">
-                    Students confused on this concept right now
-                  </span>
+                  <span class="flex size-9 items-center justify-center rounded-lg bg-consensus text-primary-foreground font-bold">${topDoubt.confusionCount}</span>
+                  <span class="text-sm font-medium text-foreground">Students confused on this concept right now</span>
                 </div>
-
-                <button type="button" onclick="consensusActions.openResolveModal('${topDoubt.id}')" 
-                  class="inline-flex items-center gap-2 rounded-lg bg-consensus px-5 py-2.5 text-sm font-medium text-primary-foreground shadow-sm hover:bg-consensus-strong transition-all cursor-pointer">
-                  ${Icons.check}
-                  Resolve Doubt in Lecture
-                </button>
+                <button type="button" onclick="consensusActions.openResolveModal('${topDoubt.id}')"
+                  class="inline-flex items-center gap-2 rounded-lg bg-consensus px-5 py-2.5 text-sm font-medium text-primary-foreground shadow-sm hover:bg-consensus-strong transition-all cursor-pointer">${Icons.check} Resolve Doubt in Lecture</button>
               </div>
             </div>
-          `
-              : `
-            <div class="rounded-2xl border border-dashed border-border bg-card p-12 text-center">
-              <span class="mx-auto flex size-12 items-center justify-center rounded-full bg-secondary text-muted-foreground mb-3">
-                ${Icons.check}
-              </span>
-              <h3 class="text-base font-medium text-foreground">No High-Consensus Doubts</h3>
-              <p class="mt-1 text-xs text-muted-foreground max-w-sm mx-auto">
-                No doubt currently exceeds the 5-student confusion threshold. Your class is following along well!
-              </p>
+          ` : `
+            <div class="rounded-2xl border border-dashed border-border bg-card p-10 text-center">
+              <span class="mx-auto flex size-12 items-center justify-center rounded-full bg-secondary text-muted-foreground mb-3">${Icons.check}</span>
+              <h3 class="text-base font-medium text-foreground">No Consensus Doubts Right Now</h3>
+              <p class="mt-1 text-xs text-muted-foreground max-w-sm mx-auto">No unresolved doubt currently has ${CONSENSUS_THRESHOLD} or more confused students.</p>
             </div>
-          `
-          }
+          `}
 
-          <!-- Other Consensus Doubts -->
-          ${
-            otherConsensus.length > 0
-              ? `
+          ${otherConsensus.length > 0 ? `
             <div class="space-y-4">
-              <h3 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Other Topics Near Threshold</h3>
+              <h3 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Other Consensus Topics</h3>
               <div class="grid gap-4 sm:grid-cols-2">
-                ${otherConsensus
-                  .map(
-                    (d) => `
+                ${otherConsensus.map((d) => `
                   <div class="rounded-xl border border-border bg-card p-5 shadow-xs">
                     <div class="flex items-center justify-between text-xs mb-2">
                       <span class="rounded bg-secondary px-2 py-0.5 font-medium text-secondary-foreground">${escapeHTML(d.topic)}</span>
                       <span class="font-bold text-consensus">${d.confusionCount} confused</span>
                     </div>
                     <p class="text-sm font-medium text-foreground">${escapeHTML(d.question)}</p>
-                    <button type="button" onclick="consensusActions.openResolveModal('${d.id}')" 
-                      class="mt-4 w-full rounded-lg border border-border py-1.5 text-xs font-medium text-foreground hover:bg-secondary transition-colors">
-                      Mark Addressed
-                    </button>
+                    <button type="button" onclick="consensusActions.openResolveModal('${d.id}')" class="mt-4 w-full rounded-lg border border-border py-1.5 text-xs font-medium text-foreground hover:bg-secondary transition-colors">Mark Addressed</button>
                   </div>
-                `
-                  )
-                  .join("")}
+                `).join("")}
               </div>
             </div>
-          `
-              : ""
-          }
+          ` : ""}
 
-          <!-- Resolved Topics Recap -->
-          <div class="rounded-xl border border-border bg-card p-6 shadow-xs">
-            <h3 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
-              Addressed In This Lecture (${resolvedDoubts.length})
-            </h3>
-            ${
-              resolvedDoubts.length === 0
-                ? `<p class="text-xs text-muted-foreground">No doubts resolved yet.</p>`
-                : `<div class="divide-y divide-border">
-                    ${resolvedDoubts
-                      .map(
-                        (d) => `
-                      <div class="py-3 flex items-start justify-between gap-4">
-                        <div>
-                          <div class="flex items-center gap-2 mb-1">
-                            <span class="rounded bg-secondary px-2 py-0.5 text-xs font-medium">${escapeHTML(d.topic)}</span>
-                            <span class="text-xs text-resolved-strong font-medium">Addressed</span>
-                          </div>
-                          <p class="text-sm text-foreground">${escapeHTML(d.question)}</p>
-                          ${d.answer ? `<p class="text-xs text-muted-foreground mt-1 italic">"${escapeHTML(d.answer)}"</p>` : ""}
+          <section id="professor-attention-list" class="scroll-mt-24 rounded-xl border border-border bg-card p-6 shadow-xs">
+            <div class="flex items-start justify-between gap-4 mb-4">
+              <div>
+                <h3 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Active Doubts Requiring Attention (${attentionDoubts.length})</h3>
+                <p class="mt-1 text-xs text-muted-foreground">Includes pending, small-group, and consensus doubts that are not yet resolved.</p>
+              </div>
+            </div>
+            ${attentionDoubts.length === 0 ? `<p class="text-xs text-muted-foreground">No active doubts right now.</p>` : `
+              <div class="space-y-3">
+                ${attentionDoubts.map((d) => `
+                  <div id="professor-doubt-${d.id}" class="scroll-mt-24 rounded-lg border border-border p-4">
+                    <div class="flex flex-wrap items-start justify-between gap-3">
+                      <div class="min-w-0 flex-1">
+                        <div class="flex items-center gap-2 text-xs">
+                          <span class="rounded bg-secondary px-2 py-0.5 font-medium">${escapeHTML(d.topic)}</span>
+                          <span class="font-semibold ${d.confusionCount >= CONSENSUS_THRESHOLD ? "text-consensus" : "text-muted-foreground"}">${d.confusionCount} confused</span>
                         </div>
-                        <span class="text-xs text-muted-foreground shrink-0">${d.confusionCount} students</span>
+                        <p class="mt-2 text-sm font-medium text-foreground">${escapeHTML(d.question)}</p>
                       </div>
-                    `
-                      )
-                      .join("")}
-                   </div>`
-            }
+                      <button type="button" onclick="consensusActions.openResolveModal('${d.id}')" class="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90">Resolve</button>
+                    </div>
+                  </div>
+                `).join("")}
+              </div>
+            `}
+          </section>
+
+          <div class="rounded-xl border border-border bg-card p-6 shadow-xs">
+            <h3 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">Addressed In This Lecture (${resolvedDoubts.length})</h3>
+            ${resolvedDoubts.length === 0 ? `<p class="text-xs text-muted-foreground">No doubts resolved yet.</p>` : `<div class="divide-y divide-border">
+              ${resolvedDoubts.map((d) => `
+                <div class="py-3 flex items-start justify-between gap-4">
+                  <div>
+                    <div class="flex items-center gap-2 mb-1"><span class="rounded bg-secondary px-2 py-0.5 text-xs font-medium">${escapeHTML(d.topic)}</span><span class="text-xs text-resolved-strong font-medium">Addressed</span></div>
+                    <p class="text-sm text-foreground">${escapeHTML(d.question)}</p>
+                    ${d.answer ? `<p class="text-xs text-muted-foreground mt-1 italic">"${escapeHTML(d.answer)}"</p>` : ""}
+                  </div>
+                  <span class="text-xs text-muted-foreground shrink-0">${d.confusionCount} students</span>
+                </div>
+              `).join("")}
+            </div>`}
           </div>
         </main>
       </div>
     `;
   }
+
 
   // Common Doubt Card Component
   function renderDoubtCard(doubt, allowSupport = true) {
@@ -1576,6 +1763,16 @@
         </div>
 
         <p class="mt-2 text-sm font-medium text-foreground text-pretty">${escapeHTML(doubt.question)}</p>
+
+        ${doubt.taAnswer && doubt.isMine ? `
+          <div class="mt-3 rounded-lg border border-border bg-accent/50 p-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="text-xs font-semibold text-foreground">TA Response${doubt.taName ? ` · ${escapeHTML(doubt.taName)}` : ""}</span>
+              <span class="text-[0.7rem] font-medium text-resolved-strong">Answered${doubt.answeredAt ? ` · ${escapeHTML(doubt.answeredAt)}` : ""}</span>
+            </div>
+            <p class="mt-1 text-sm text-foreground">${escapeHTML(doubt.taAnswer)}</p>
+          </div>
+        ` : ""}
 
         <div class="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3 text-xs">
           <div class="flex items-center gap-1.5 text-muted-foreground">
@@ -1863,6 +2060,16 @@
   }
 
   // Core Render Trigger
+
+  function focusDoubtFromNotificationURL() {
+    const doubtId = new URLSearchParams(window.location.search).get("doubt");
+    if (!doubtId || store.currentView !== "professor") return;
+    store.setActiveDoubt(doubtId);
+    setTimeout(() => {
+      document.getElementById(`professor-doubt-${doubtId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 120);
+  }
+
   function renderApp() {
     const root = document.getElementById("app-root");
     if (!root) return;
@@ -1892,6 +2099,10 @@
 
     root.innerHTML = html;
     renderRoleSwitcher();
+    if (view === "professor") {
+      maybeNotifyProfessor();
+      focusDoubtFromNotificationURL();
+    }
   }
     window.renderApp = renderApp;
 
